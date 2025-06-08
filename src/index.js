@@ -67,7 +67,7 @@ Instructions:
 
         // Initialize AI model
         const genAI = new GoogleGenerativeAI(aiApiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Or "gemini-1.5-flash", "gemini-1.5-pro", etc.
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-05-20" }); // Or "gemini-1.5-flash", "gemini-1.5-pro", etc.
 
         const result = await model.generateContent(prompt);
         const response = result.response;
