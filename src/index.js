@@ -1,7 +1,8 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
 const { Octokit } = require('@octokit/rest');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+// Import Type for structured output schema definition
+const { GoogleGenerativeAI, Part, Type } = require('@google/generative-ai'); 
 
 async function run() {
     try {
@@ -55,44 +56,49 @@ Instructions:
 - Based on the issue's title and body, suggest up to 3 existing labels that are most relevant.
 - If existing labels are not sufficient, suggest up to 2 new, concise, and descriptive labels.
 - Provide your response in a JSON array format. Each element in the array should be an object with a 'name' property for the label. If it's a new label, also include a 'description' property.
-- Example format:
-  [
-    { "name": "bug" },
-    { "name": "enhancement" },
-    { "name": "feature", "description": "New features or functionalities" }
-  ]
 `;
 
-        core.info('Sending prompt to AI model...');
+        core.info('Sending prompt to AI model with structured output request...');
 
         // Initialize AI model
         const genAI = new GoogleGenerativeAI(aiApiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Or "gemini-1.5-flash", "gemini-1.5-pro", etc.
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-        const result = await model.generateContent(prompt);
-        const response = result.response;
-        const text = response.text();
+        // Use generateContent with structured output configuration
+        const result = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            name: { type: Type.STRING },
+                            description: { type: Type.STRING, optional: true } // Description is optional for existing labels
+                        },
+                        propertyOrdering: ["name", "description"] // Maintain a consistent order
+                    }
+                }
+            },
+        });
 
-        core.info(`AI Response: ${text}`);
+        // The response.text() will now directly contain the JSON string
+        const jsonResponseText = result.response.text(); 
+        core.info(`AI Raw JSON Response: ${jsonResponseText}`);
 
         let suggestedLabels = [];
         try {
-            // Attempt to parse the JSON output from the AI
-            suggestedLabels = JSON.parse(text);
+            // Directly parse the JSON output from the AI, as it's now guaranteed to be structured
+            suggestedLabels = JSON.parse(jsonResponseText);
             if (!Array.isArray(suggestedLabels)) {
-                throw new Error("AI response was not a JSON array.");
+                // This case should ideally not happen with structured output, but it's a good safeguard
+                throw new Error("AI response was not a JSON array despite schema request.");
             }
         } catch (parseError) {
-            core.error(`Failed to parse AI response as JSON: ${parseError.message}`);
-            // Fallback: Try to extract labels if JSON parsing fails (less robust)
-            const matches = text.match(/"name":\s*"([^"]+)"/g);
-            if (matches) {
-                suggestedLabels = matches.map(m => ({ name: m.match(/"name":\s*"([^"]+)"/)[1] }));
-                core.warning('Attempted to extract labels using regex due to JSON parsing error. This might not be accurate.');
-            } else {
-                core.warning('Could not extract any labels from AI response.');
-                return; // Exit if no labels can be extracted
-            }
+            // If parsing fails here, it indicates a serious issue with the AI's adherence to the schema
+            core.setFailed(`Critical error: Failed to parse structured AI response as JSON: ${parseError.message}. Raw response: ${jsonResponseText}`);
+            return;
         }
 
         const labelsToAdd = [];
@@ -100,27 +106,33 @@ Instructions:
             const labelName = labelData.name;
             const labelDescription = labelData.description;
 
+            // Ensure label name is a string and not empty
+            if (typeof labelName !== 'string' || labelName.trim() === '') {
+                core.warning(`Skipping invalid label data: ${JSON.stringify(labelData)}`);
+                continue;
+            }
+
             const existingLabel = repoLabels.find(l => l.name.toLowerCase() === labelName.toLowerCase());
 
             if (!existingLabel) {
-                core.info(`Label "${labelName}" does not exist. Creating it.`);
+                core.info(`Label "${labelName}" does not exist. Attempting to create it.`);
                 try {
                     await octokit.rest.issues.createLabel({
                         owner,
                         repo,
                         name: labelName,
-                        color: 'ededed', // Default color, you might want to randomize or define
-                        description: labelDescription || `Label suggested by AI for ${labelName}`
+                        color: 'ededed', // Default color, consider making this configurable or AI-suggested
+                        description: labelDescription || `AI-suggested label for issue automation`
                     });
                     labelsToAdd.push(labelName);
-                    core.info(`Created label "${labelName}".`);
+                    core.info(`Successfully created label "${labelName}".`);
                 } catch (createError) {
-                    core.error(`Failed to create label "${labelName}": ${createError.message}`);
-                    // If label creation fails (e.g., already exists due to race condition),
-                    // we can still try to add it to the issue if it now exists.
-                    const { data: updatedRepoLabels } = await octokit.rest.issues.listLabelsForRepo({ owner, repo });
-                    if (updatedRepoLabels.find(l => l.name.toLowerCase() === labelName.toLowerCase())) {
-                        labelsToAdd.push(labelName);
+                    // Check if the error indicates the label already exists (e.g., race condition)
+                    if (createError.status === 422 && createError.message.includes('already exists')) {
+                        core.warning(`Label "${labelName}" already exists (likely created by another process). Adding to issue.`);
+                        labelsToAdd.push(labelName); // Add it if it now exists
+                    } else {
+                        core.error(`Failed to create label "${labelName}": ${createError.message}`);
                     }
                 }
             } else {
