@@ -1,7 +1,7 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
 const { Octokit } = require('@octokit/rest');
-import {GoogleGenAI} from '@google/genai';
+const { GoogleGenerativeAI } = require('@google/genai');
 
 async function run() {
     try {
@@ -66,13 +66,10 @@ Instructions:
         core.info('Sending prompt to AI model...');
 
         // Initialize AI model
-        const genAI = new GoogleGenAI({apiKey: aiApiKey});
+        const genAI = new GoogleGenerativeAI(aiApiKey);
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Or "gemini-1.5-flash", "gemini-1.5-pro", etc.
 
-        const result = await genAI.models.generateContent({
-			model: 'gemini-2.0-flash',
-			contents: prompt,
-		  });
-		
+        const result = await model.generateContent(prompt);
         const response = result.response;
         const text = response.text();
 
