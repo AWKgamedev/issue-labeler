@@ -35943,9 +35943,9 @@ Instructions:
 
         core.info('Sending prompt to AI model...');
 
-        // Initialize AI model (using Google Generative AI as an example)
+        // Initialize AI model
         const genAI = new GoogleGenerativeAI(aiApiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" }); // Or "gemini-1.5-flash", "gemini-1.5-pro", etc.
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Or "gemini-1.5-flash", "gemini-1.5-pro", etc.
 
         const result = await model.generateContent(prompt);
         const response = result.response;
