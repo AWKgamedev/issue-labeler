@@ -1,7 +1,9 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
 const { Octokit } = require('@octokit/rest');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+// Import Type from the SDK
+const { GoogleGenerativeAI, Part, FunctionCalling, GenerativeModel, type, constants } = require('@google/generative-ai');
+
 
 async function run() {
     try {
@@ -43,6 +45,7 @@ async function run() {
         }
 
         // 2. Construct the prompt for the AI model
+        // The prompt now focuses solely on the content, as the output format is handled by the schema.
         const prompt = `You are an expert GitHub issue labeler. Your task is to analyze an issue and suggest appropriate labels from a given list. If no existing labels seem suitable, suggest new, highly relevant labels.
 
 Here is the issue:
@@ -54,51 +57,65 @@ ${labelsPrompt}
 Instructions:
 - Based on the issue's title and body, suggest up to 3 existing labels that are most relevant.
 - If existing labels are not sufficient, suggest up to 2 new, concise, and descriptive labels.
-- Provide your response in a JSON array format. Each element in the array should be an object with a 'name' property for the label. If it's a new label, also include a 'description' property.
-- Example format:
-  [
-    { "name": "bug" },
-    { "name": "enhancement" },
-    { "name": "feature", "description": "New features or functionalities" }
-  ]
+- For new labels, ensure a good description is provided.
 `;
 
-        core.info('Sending prompt to AI model...');
+        core.info('Sending prompt to AI model with structured output...');
 
         // Initialize AI model
         const genAI = new GoogleGenerativeAI(aiApiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Or "gemini-1.5-flash", "gemini-1.5-pro", etc.
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Or "gemini-1.5-pro"
 
-        const result = await model.generateContent(prompt);
-        const response = result.response;
-        const text = response.text();
+        // *** IMPORTANT CHANGE HERE ***
+        // Use the generateContent method directly with the config for structured output
+        const result = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: type.Type.ARRAY,
+                    items: {
+                        type: type.Type.OBJECT,
+                        properties: {
+                            name: { // Label name
+                                type: type.Type.STRING,
+                            },
+                            description: { // Description for new labels
+                                type: type.Type.STRING,
+                                description: "Required only if this is a new label suggestion. A concise description of the label's purpose.",
+                            },
+                        },
+                        // The AI might return properties in any order, so propertyOrdering is less critical here
+                        // but can be included if you have a strong preference for the order within each object.
+                        // propertyOrdering: ["name", "description"],
+                        required: ["name"], // 'name' is always required
+                    },
+                },
+            },
+        });
 
-        core.info(`AI Response: ${text}`);
+        // The response text for structured output will already be valid JSON
+        const text = result.response.text();
+        core.info(`AI Structured Response: ${text}`);
 
         let suggestedLabels = [];
         try {
-            // Attempt to parse the JSON output from the AI
             suggestedLabels = JSON.parse(text);
             if (!Array.isArray(suggestedLabels)) {
-                throw new Error("AI response was not a JSON array.");
+                throw new Error("AI response was not a JSON array, despite schema.");
             }
         } catch (parseError) {
-            core.error(`Failed to parse AI response as JSON: ${parseError.message}`);
-            // Fallback: Try to extract labels if JSON parsing fails (less robust)
-            const matches = text.match(/"name":\s*"([^"]+)"/g);
-            if (matches) {
-                suggestedLabels = matches.map(m => ({ name: m.match(/"name":\s*"([^"]+)"/)[1] }));
-                core.warning('Attempted to extract labels using regex due to JSON parsing error. This might not be accurate.');
-            } else {
-                core.warning('Could not extract any labels from AI response.');
-                return; // Exit if no labels can be extracted
-            }
+            core.setFailed(`Failed to parse AI response as JSON even with structured output config: ${parseError.message}. Raw AI response: ${text}`);
+            return; // Exit if parsing fails
         }
 
         const labelsToAdd = [];
         for (const labelData of suggestedLabels) {
             const labelName = labelData.name;
-            const labelDescription = labelData.description;
+            // Provide a default description for new labels if the AI doesn't provide one,
+            // though with the schema, it should be prompted to.
+            const labelDescription = labelData.description || `AI-suggested label for ${labelName}`;
+
 
             const existingLabel = repoLabels.find(l => l.name.toLowerCase() === labelName.toLowerCase());
 
@@ -109,8 +126,8 @@ Instructions:
                         owner,
                         repo,
                         name: labelName,
-                        color: 'ededed', // Default color, you might want to randomize or define
-                        description: labelDescription || `Label suggested by AI for ${labelName}`
+                        color: 'ededed', // Default color
+                        description: labelDescription
                     });
                     labelsToAdd.push(labelName);
                     core.info(`Created label "${labelName}".`);
