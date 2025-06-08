@@ -1,0 +1,15 @@
+name: 'AI Issue Labeler'
+description: 'Uses an AI model to suggest and apply labels to GitHub issues.'
+inputs:
+  github-token:
+    description: 'GitHub Token for API access.'
+    required: true
+  ai-api-key:
+    description: 'API Key for the AI model.'
+    required: true
+outputs:
+  labels-applied:
+    description: 'A comma-separated string of labels that were applied to the issue.'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

@@ -1,0 +1,31 @@
+name: AI Labeler for Issues
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  label-issue:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write # Grant write permission to issues
+      contents: read # Allow reading workflow files (default)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run AI Labeler
+        id: ai-labeler
+        uses: ./. # Refers to the action defined in this repository
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          ai-api-key: ${{ secrets.AI_API_KEY }} # Store your AI API key as a secret
