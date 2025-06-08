@@ -1,9 +1,8 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
 const { Octokit } = require('@octokit/rest');
-// Import Type from the SDK
-const { GoogleGenerativeAI, Part, FunctionCalling, GenerativeModel, type, constants } = require('@google/generative-ai');
-
+// CORRECTED IMPORT: No need to destructure 'type' here
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 async function run() {
     try {
@@ -45,7 +44,6 @@ async function run() {
         }
 
         // 2. Construct the prompt for the AI model
-        // The prompt now focuses solely on the content, as the output format is handled by the schema.
         const prompt = `You are an expert GitHub issue labeler. Your task is to analyze an issue and suggest appropriate labels from a given list. If no existing labels seem suitable, suggest new, highly relevant labels.
 
 Here is the issue:
@@ -66,35 +64,32 @@ Instructions:
         const genAI = new GoogleGenerativeAI(aiApiKey);
         const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Or "gemini-1.5-pro"
 
-        // *** IMPORTANT CHANGE HERE ***
-        // Use the generateContent method directly with the config for structured output
+        // *** IMPORTANT CHANGE HERE: How you reference 'type' properties ***
+        const { type } = genAI; // Access 'type' directly from the instantiated genAI object
+
         const result = await model.generateContent({
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             generationConfig: {
                 responseMimeType: "application/json",
                 responseSchema: {
-                    type: type.Type.ARRAY,
+                    type: type.Type.ARRAY, // Use type.Type.ARRAY
                     items: {
-                        type: type.Type.OBJECT,
+                        type: type.Type.OBJECT, // Use type.Type.OBJECT
                         properties: {
-                            name: { // Label name
-                                type: type.Type.STRING,
+                            name: {
+                                type: type.Type.STRING, // Use type.Type.STRING
                             },
-                            description: { // Description for new labels
-                                type: type.Type.STRING,
+                            description: {
+                                type: type.Type.STRING, // Use type.Type.STRING
                                 description: "Required only if this is a new label suggestion. A concise description of the label's purpose.",
                             },
                         },
-                        // The AI might return properties in any order, so propertyOrdering is less critical here
-                        // but can be included if you have a strong preference for the order within each object.
-                        // propertyOrdering: ["name", "description"],
-                        required: ["name"], // 'name' is always required
+                        required: ["name"],
                     },
                 },
             },
         });
 
-        // The response text for structured output will already be valid JSON
         const text = result.response.text();
         core.info(`AI Structured Response: ${text}`);
 
@@ -106,16 +101,13 @@ Instructions:
             }
         } catch (parseError) {
             core.setFailed(`Failed to parse AI response as JSON even with structured output config: ${parseError.message}. Raw AI response: ${text}`);
-            return; // Exit if parsing fails
+            return;
         }
 
         const labelsToAdd = [];
         for (const labelData of suggestedLabels) {
             const labelName = labelData.name;
-            // Provide a default description for new labels if the AI doesn't provide one,
-            // though with the schema, it should be prompted to.
             const labelDescription = labelData.description || `AI-suggested label for ${labelName}`;
-
 
             const existingLabel = repoLabels.find(l => l.name.toLowerCase() === labelName.toLowerCase());
 
@@ -133,8 +125,6 @@ Instructions:
                     core.info(`Created label "${labelName}".`);
                 } catch (createError) {
                     core.error(`Failed to create label "${labelName}": ${createError.message}`);
-                    // If label creation fails (e.g., already exists due to race condition),
-                    // we can still try to add it to the issue if it now exists.
                     const { data: updatedRepoLabels } = await octokit.rest.issues.listLabelsForRepo({ owner, repo });
                     if (updatedRepoLabels.find(l => l.name.toLowerCase() === labelName.toLowerCase())) {
                         labelsToAdd.push(labelName);
