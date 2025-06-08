@@ -35880,7 +35880,7 @@ const core = __nccwpck_require__(7484);
 const github = __nccwpck_require__(3228);
 const { Octokit } = __nccwpck_require__(5772);
 // CORRECTED IMPORT: No need to destructure 'type' here
-const { GoogleGenerativeAI, Part, FunctionDeclarationSchemaProperty, FunctionDeclarationSchemaType } = __nccwpck_require__(7656);
+const { GoogleGenerativeAI } = __nccwpck_require__(7656);
 
 async function run() {
     try {
@@ -35942,23 +35942,23 @@ Instructions:
         const genAI = new GoogleGenerativeAI(aiApiKey);
         const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Or "gemini-1.5-pro"
 
-        // Corrected way to access the Type enum for schema definitions
-        const { Type } = FunctionDeclarationSchemaType;
+        // *** IMPORTANT CHANGE HERE: How you reference 'type' properties ***
+        const { type } = genAI; // Access 'type' directly from the instantiated genAI object
 
         const result = await model.generateContent({
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             generationConfig: {
                 responseMimeType: "application/json",
                 responseSchema: {
-                    type: Type.ARRAY, // Use Type.ARRAY
+                    type: type.Type.ARRAY, // Use type.Type.ARRAY
                     items: {
-                        type: Type.OBJECT, // Use Type.OBJECT
+                        type: type.Type.OBJECT, // Use type.Type.OBJECT
                         properties: {
                             name: {
-                                type: Type.STRING, // Use Type.STRING
+                                type: type.Type.STRING, // Use type.Type.STRING
                             },
                             description: {
-                                type: Type.STRING, // Use Type.STRING
+                                type: type.Type.STRING, // Use type.Type.STRING
                                 description: "Required only if this is a new label suggestion. A concise description of the label's purpose.",
                             },
                         },
@@ -36035,7 +36035,6 @@ Instructions:
 }
 
 run();
-
 module.exports = __webpack_exports__;
 /******/ })()
 ;
