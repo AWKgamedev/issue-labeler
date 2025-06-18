@@ -35881,142 +35881,171 @@ const github = __nccwpck_require__(3228);
 const { Octokit } = __nccwpck_require__(5772);
 const { GoogleGenerativeAI } = __nccwpck_require__(7656);
 
+/**
+ * Generates a random hex color code.
+ * @returns {string} A 6-character hex color code without the '#'.
+ */
+function getRandomColor() {
+    return Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
+}
+
 async function run() {
     try {
-        const githubToken = core.getInput('github-token');
-        const aiApiKey = core.getInput('ai-api-key');
+        // --- Get Action Inputs ---
+        const githubToken = core.getInput('github-token', { required: true });
+        const aiApiKey = core.getInput('ai-api-key', { required: true });
+        // New inputs for flexible label amounts with default values
+        const maxExistingLabels = core.getInput('max-existing-labels') || '5';
+        const maxNewLabels = core.getInput('max-new-labels') || '2';
 
+        // --- Initialize Clients ---
         const octokit = new Octokit({ auth: githubToken });
 
-        const payload = github.context.payload;
-        const issue = payload.issue;
-        const repository = payload.repository;
+        // --- Get Context from GitHub Event ---
+        const { payload, issue: contextIssue, repo: contextRepo } = github.context;
 
+        // The issue object is only available for issue-related events.
+        const issue = payload.issue || contextIssue;
         if (!issue) {
-            core.info('No issue found in the payload. Exiting.');
+            core.info('This action is running on an event that is not related to an issue. Exiting gracefully.');
             return;
         }
 
-        const issueTitle = issue.title;
-        const issueBody = issue.body || 'No description provided.';
+        const owner = contextRepo.owner;
+        const repo = contextRepo.repo;
         const issueNumber = issue.number;
-        const owner = repository.owner.login;
-        const repo = repository.name;
+        const issueTitle = issue.title;
+        // Ensure body is a string, even if it's null or undefined.
+        const issueBody = issue.body || 'No description provided.';
+
 
         core.info(`Processing issue #${issueNumber}: ${issueTitle}`);
 
-        // 1. Get all project labels and their descriptions
+        // --- 1. Fetch Existing Repository Labels ---
+        core.info('Fetching existing labels from the repository...');
         const { data: repoLabels } = await octokit.rest.issues.listLabelsForRepo({
             owner,
             repo,
         });
 
-        let labelsPrompt = 'Existing labels in the project:\n';
+        let labelsPromptSection = 'No existing labels found in the project.\n';
         if (repoLabels.length > 0) {
+            labelsPromptSection = 'Here is a list of all existing labels in the project. You should strongly prefer these:\n';
             repoLabels.forEach(label => {
-                labelsPrompt += `- Name: "${label.name}", Description: "${label.description || 'No description'}"\n`;
+                labelsPromptSection += `- Name: "${label.name}", Description: "${label.description || 'No description'}"\n`;
             });
-        } else {
-            labelsPrompt += 'No existing labels.\n';
         }
 
-        // 2. Construct the prompt for the AI model
-        const prompt = `You are an expert GitHub issue labeler. Your task is to analyze an issue and suggest appropriate labels from a given list. If no existing labels seem suitable, suggest new, highly relevant labels.
+        // --- 2. Construct the Enhanced Prompt for the AI Model ---
+        // This new prompt is more directive to guide the AI's behavior.
+        const prompt = `
+You are an expert GitHub issue labeler. Your task is to analyze a GitHub issue and assign the most appropriate labels based on a list of existing labels from the repository.
 
-Here is the issue:
-Title: "${issueTitle}"
-Body: "${issueBody}"
+**Primary Goal:** Maximize the use of EXISTING labels.
 
-${labelsPrompt}
+**Issue Details:**
+- Title: "${issueTitle}"
+- Body: "${issueBody}"
 
-Instructions:
-- Based on the issue's title and body, suggest up to 3 existing labels that are most relevant.
-- If existing labels are not sufficient, suggest up to 2 new, concise, and descriptive labels.
-- Provide your response in a JSON array format. Each element in the array should be an object with a 'name' property for the label. If it's a new label, also include a 'description' property.
-- Example format:
-  [
-    { "name": "bug" },
-    { "name": "enhancement" },
-    { "name": "feature", "description": "New features or functionalities" }
-  ]
+**Available Repository Labels (Name and Description):**
+${labelsPromptSection}
+
+**Instructions:**
+1.  **Analyze and Match:** Carefully review the issue's title and body. Compare its content and intent against the list of available repository labels.
+2.  **Prioritize Existing Labels:** Your main goal is to select the most relevant labels from the existing list. Suggest up to ${maxExistingLabels} existing labels.
+3.  **Suggest New Labels (Only if Absolutely Necessary):**
+    - You may only suggest a new label if no combination of existing labels can accurately categorize the issue.
+    - Do NOT create a new label that is just a minor variation of an existing one.
+    - Before creating a new label, you MUST analyze the naming convention and style of existing labels (e.g., 'type: area', 'status: in-progress', 'priority: high'). New labels MUST follow these established patterns.
+    - You may suggest a maximum of ${maxNewLabels} new labels.
+    - Every new label object in your response MUST include a 'description' property that clearly explains its purpose.
+4.  **Output Format:** Your response MUST be a valid JSON array of objects. Each object must have a 'name' key. For NEW labels, it MUST also include a 'description' key. Do not wrap the JSON in markdown backticks.
+
+**Example JSON Output:**
+[
+  { "name": "bug" },
+  { "name": "documentation" },
+  { "name": "scope:organization", "description": "Task related to the project's organization and management." }
+]
 `;
 
-        core.info('Sending prompt to AI model...');
+        core.info('Sending enhanced prompt to AI model...');
 
-        // Initialize AI model
+        // --- 3. Call the Generative AI Model ---
         const genAI = new GoogleGenerativeAI(aiApiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-05-20" }); // Or "gemini-1.5-flash", "gemini-1.5-pro", etc.
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
         const result = await model.generateContent(prompt);
         const response = result.response;
-        const text = response.text();
+        // Clean up the response text to remove potential markdown wrappers.
+        const text = response.text().replace(/```json\n|```/g, '').trim();
 
         core.info(`AI Response: ${text}`);
 
+        // --- 4. Parse AI Response and Prepare Labels ---
         let suggestedLabels = [];
         try {
-            // Attempt to parse the JSON output from the AI
             suggestedLabels = JSON.parse(text);
             if (!Array.isArray(suggestedLabels)) {
-                throw new Error("AI response was not a JSON array.");
+                throw new Error("AI response was valid JSON but not an array.");
             }
         } catch (parseError) {
-            core.error(`Failed to parse AI response as JSON: ${parseError.message}`);
-            // Fallback: Try to extract labels if JSON parsing fails (less robust)
-            const matches = text.match(/"name":\s*"([^"]+)"/g);
-            if (matches) {
-                suggestedLabels = matches.map(m => ({ name: m.match(/"name":\s*"([^"]+)"/)[1] }));
-                core.warning('Attempted to extract labels using regex due to JSON parsing error. This might not be accurate.');
-            } else {
-                core.warning('Could not extract any labels from AI response.');
-                return; // Exit if no labels can be extracted
-            }
+            core.setFailed(`Failed to parse AI response as a JSON array: ${parseError.message}. Raw response: "${text}"`);
+            return; // Stop execution if we can't get a valid label list.
         }
 
         const labelsToAdd = [];
         for (const labelData of suggestedLabels) {
-            const labelName = labelData.name;
-            const labelDescription = labelData.description;
+            if (!labelData.name) continue; // Skip if a label object has no name.
 
+            const labelName = labelData.name;
+            const labelDescription = labelData.description; // Will be undefined if not provided
+
+            // Check if the label already exists (case-insensitive search).
             const existingLabel = repoLabels.find(l => l.name.toLowerCase() === labelName.toLowerCase());
 
             if (!existingLabel) {
+                // --- Create New Label if it Doesn't Exist ---
                 core.info(`Label "${labelName}" does not exist. Creating it.`);
                 try {
                     await octokit.rest.issues.createLabel({
                         owner,
                         repo,
                         name: labelName,
-                        color: 'ededed', // Default color, you might want to randomize or define
-                        description: labelDescription || `Label suggested by AI for ${labelName}`
+                        color: getRandomColor(), // Assign a random color
+                        // Use the AI's description, or provide a clear fallback if it was missing.
+                        description: labelDescription || `AI suggested label: ${labelName}`
                     });
                     labelsToAdd.push(labelName);
-                    core.info(`Created label "${labelName}".`);
+                    core.info(`Successfully created label "${labelName}".`);
                 } catch (createError) {
-                    core.error(`Failed to create label "${labelName}": ${createError.message}`);
-                    // If label creation fails (e.g., already exists due to race condition),
-                    // we can still try to add it to the issue if it now exists.
-                    const { data: updatedRepoLabels } = await octokit.rest.issues.listLabelsForRepo({ owner, repo });
-                    if (updatedRepoLabels.find(l => l.name.toLowerCase() === labelName.toLowerCase())) {
+                    // Handle cases where the label might have been created in a race condition.
+                    if (createError.message.includes('already_exists')) {
+                        core.warning(`Label "${labelName}" already existed upon creation attempt (race condition). Adding it anyway.`);
                         labelsToAdd.push(labelName);
+                    } else {
+                        core.error(`Failed to create label "${labelName}": ${createError.message}`);
                     }
                 }
             } else {
-                core.info(`Label "${labelName}" already exists.`);
+                // --- Add Existing Label ---
+                core.info(`Label "${labelName}" already exists. Adding it.`);
                 labelsToAdd.push(labelName);
             }
         }
 
+        // --- 5. Apply Labels to the Issue ---
         if (labelsToAdd.length > 0) {
-            core.info(`Adding labels to issue #${issueNumber}: ${labelsToAdd.join(', ')}`);
+            const uniqueLabelsToAdd = [...new Set(labelsToAdd)]; // Ensure no duplicates
+            core.info(`Adding labels to issue #${issueNumber}: ${uniqueLabelsToAdd.join(', ')}`);
             await octokit.rest.issues.addLabels({
                 owner,
                 repo,
                 issue_number: issueNumber,
-                labels: labelsToAdd,
+                labels: uniqueLabelsToAdd,
             });
             core.info(`Labels successfully added to issue #${issueNumber}.`);
-            core.setOutput('labels-applied', labelsToAdd.join(','));
+            core.setOutput('labels-applied', uniqueLabelsToAdd.join(','));
         } else {
             core.info('No labels to add to the issue.');
             core.setOutput('labels-applied', '');
@@ -36028,6 +36057,7 @@ Instructions:
 }
 
 run();
+
 module.exports = __webpack_exports__;
 /******/ })()
 ;
